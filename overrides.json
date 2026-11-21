@@ -1,0 +1,12 @@
+{
+  "bugfix_hours": 10,
+  "default_cap": 180,
+  "default_prol": 0,
+  "hours": {
+    "2026_Q4_S5": { "TM-2680": 4 }
+  },
+  "client": {
+    "TM-2825": "CTP",
+    "TM-2544": "Nepi"
+  }
+}
