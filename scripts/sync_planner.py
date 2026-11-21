@@ -3,13 +3,16 @@
 
 Usage:
   python3 scripts/sync_planner.py --baseline index.html --jira jira.json \
-      [--overrides overrides.json] [--names names.json] \
+      [--overrides overrides.json] [--names names.json] [--epics epics.json] \
       --out index.html --summary summary.md
 
 jira.json   = raw JSON from Jira search (`issues` list) for
               `project = TM AND sprint in futureSprints()` with fields
               summary,status,issuetype,timeoriginalestimate,parent,customfield_10020
 names.json  = {"TM-2488": "English task name"} – translations made by the agent
+epics.json  = raw JSON from Jira search for the parent epics (`key in (...)`) with
+              fields summary,customfield_11258 (epic "Client" field)
+Client priority: overrides.json > epic Client field > previous Planner > [Prefix] > "?"
 overrides.json = {
    "hours":  {"2026_Q4_S5": {"TM-2680": 4}},   # manual hours win over Jira
    "client": {"TM-2825": "CTP"},               # manual client mapping
@@ -20,6 +23,7 @@ Only the rawData object inside index.html is changed; the viewer code stays as i
 import argparse, json, re, time, datetime, collections
 
 SPRINT_FIELD = "customfield_10020"
+CLIENT_FIELD = "customfield_11258"
 PART_TYPES = {"Frontend": "FE", "Backend/API": "BE", "Mobile": "Mobile"}
 SUFFIX_ORDER = ["FE", "BE", "Mobile"]
 BUG_TYPES = {"Bug"}
@@ -53,6 +57,7 @@ def main():
     ap.add_argument("--jira", required=True)
     ap.add_argument("--overrides")
     ap.add_argument("--names")
+    ap.add_argument("--epics")
     ap.add_argument("--out", required=True)
     ap.add_argument("--summary", required=True)
     a = ap.parse_args()
@@ -68,6 +73,18 @@ def main():
     bug_h = ov_file.get("bugfix_hours", 10)
     dcap, dprol = ov_file.get("default_cap", 180), ov_file.get("default_prol", 0)
 
+    epic_client_raw = {}
+    if a.epics:
+        ej = json.load(open(a.epics, encoding="utf-8"))
+        for e in (ej["issues"] if isinstance(ej, dict) else ej):
+            v = (e.get("fields") or {}).get(CLIENT_FIELD)
+            if isinstance(v, list):
+                v = v[0] if v else None
+            if isinstance(v, dict):
+                v = v.get("value")
+            if isinstance(v, str) and v.strip():
+                epic_client_raw[e["key"]] = re.sub(r"\s+", " ", v).strip()
+
     # knowledge from baseline: names, clients, ids per Jira key
     base_name, base_client, base_id, base_pos = {}, {}, {}, {}
     for sp, tl in raw.get("tasks", {}).items():
@@ -79,6 +96,19 @@ def main():
                     base_client[k] = t["client"]
                 base_id[(sp, k)] = t.get("id")
                 base_pos.setdefault(k, set()).add(sp)
+
+    # map Jira "Client" values onto client names already used in the Planner
+    known = {c for c in list(base_client.values()) + list(man_client.values()) if c}
+    def canon(v):
+        for c in known:
+            if c.lower() == v.lower():
+                return c
+        first = v.split()[0].lower()
+        for c in known:
+            if c.lower() == first:
+                return c
+        return v
+    epic_client = {k: canon(v) for k, v in epic_client_raw.items()}
 
     groups = collections.OrderedDict()   # (sprint, key) -> info
     flags = []
@@ -125,7 +155,9 @@ def main():
             flags.append(f"{key}: nowa nazwa z Jiry – sprawdź tłumaczenie: „{name}”")
         if POLISH.search(name):
             flags.append(f"{key}: nazwa wygląda na polską – dodaj tłumaczenie do names.json: „{name}”")
-        client = man_client.get(key) or base_client.get(key)
+        client = man_client.get(key) or epic_client.get(key) or base_client.get(key)
+        if a.epics and key not in man_client and key not in epic_client:
+            flags.append(f"{key}: brak pola Client w epiku w Jirze")
         if not client:
             m = re.match(r"\[([^\]]+)\]", g["summary"])
             client = m.group(1) if m and not m.group(1).lower().startswith(("analiza", "f]", "b]", "m]")) else "?"
